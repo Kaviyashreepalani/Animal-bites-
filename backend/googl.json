@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "animal-bites-app",
+  "private_key_id": "97194e413019532d093e9c7433b32c454433b350",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDQzqo9TBwuGz/4\nK+qw5NVevCGh/zaAzqq22sTzB7GjTXWttcVOZThUvQmVzAW1NMAJ0KIt0tVYpen8\ny72+QXcqB+R0CBgjeWaezkYCsl+ET0Br8b7WU8Tpyeu4it6HWDo+K84QTddezubJ\nVGPUCwPGjOM3516aGUa8QXxXUjLZO3eUpWvy9HcUK571QjMsxx9Cnzpl7t4Ib4sV\nqCzqq1ASrJaDLHj5Wg9ez5fnkVUY0cRvV1xEGx1Hz2Ybk+UcradvZsUcIkSkMDLH\nPiHqwGQO0ea08uKGooCYpVNSgWB23p6svDZoThgFa5aIpGOafZsqeNEBYJPWwUZR\nh2kx8bzxAgMBAAECggEAAfyATjVY1Iez9OT6jmCb5sL+hSlty92DblpACsGPSxrV\n2G9g608vUS+L7XvPj1brT4CXhVzyxH1OD7aCtWJPK1RARCoOTDqXu0GiNPz8R4B/\nP/OglY5+El0GT/bquWIBilU9eGZcKtHILGDAExygdmFhWTcbTVcZlxl+oMBGfW5k\n6a/hNE1NzsAumPl9seA9rIL33xs1UzwHa3FStIpxBVJ5cdWtMOPXTdk5DykJSUjE\nlLzYIaBvfGsEO4oPzwXIGeNAdqNKMyOjddL4z8xuvC/RVVFG8rRy55cu+sB1jqA/\nR9bwFSrhLen0DFiLp+aSaNuRECF2yG7E5iVFyba4IQKBgQD7IFly4NQ2+79h4tNy\nbqoO9fwDY/J8VoD4vhjR3TYhn0gEO+Su5JwCQRddzm+6s7Hg5i1wJKWhhb498QZZ\n1cYyeJLMQma7QmtEpZkh3UsmtdXFRg6AWUcW+Zk3R1DCcZWIvN8adSPSc0iUIgyk\n1emuCxyYx56MuDegZC0LvtY04QKBgQDU3BCumIaa+bUB5zQXkVsf9BbUHmomVOht\nCbk67PU++Q3Eryumox0vgVY6TNS8N5L4jW3VCX0Vxwt5f6moS06Tde0ORimMcH1q\nJ+83bWsqW8K2La97uGwTMaFlFbYzYHKsoH9WrXN6PdOr3d3vmmu2IKClreCNYqEF\nM63nTCV6EQKBgQDd+FIYQLJTh2I624ua8kZOww7m0EldrfiB5UV6+tUGEwxM8cPI\n8zkSpQZKXFZV6M+pwssW/M2KX/UwOwMqFNMDeaAH/AliK+s02kroq/npVYCGxs26\nlS9JF4ZeXiL8O/m4y3lIoZHwSwY0KYSTjqDmvduhD5ENQSeqFeHbJ+ufAQKBgHCW\nFZzDwC6odT0UdVEh6Pj1uj1n+O1da7KAuiCYxP8R7F5j6Mqy6/T8jAc6LCuBmZMt\n+zH7WtXx+ffBtpL1ghItBb3PDprhxPQpOzYuAcjd0BdcAr2FxmRAlAVLfpueIAl+\nutu10qaNnTACoijhnKcwisgXN/aQfGqr8wesFwaBAoGAexQ9MIgptaDRoKCoGkOQ\nFNHVtVaodi+wX9jP4to1rpy7WA9l7qiSvIklcNhbnC1Df7qBYciNiwvP9dPqKmMP\nNeMQgrgQi3Anvj5HWQEbHjRHI1HcITbZHN7nOLFvyjCA/TCNstGYwRdfyPdjIzgB\nCj1qsjVFOvgQSzvflm1YtpA=\n-----END PRIVATE KEY-----\n",
+  "client_email": "speech-translation-service@animal-bites-app.iam.gserviceaccount.com",
+  "client_id": "113044990578216338175",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/speech-translation-service%40animal-bites-app.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

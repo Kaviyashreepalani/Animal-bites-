@@ -1,0 +1,13 @@
+Flask
+flask-cors
+python-dotenv
+firebase-admin
+pymongo
+langchain
+langchain-openai
+openai
+google-cloud-translate
+google-cloud-texttospeech
+google-cloud-speech
+numpy
+pydantic
