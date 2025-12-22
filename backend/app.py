@@ -1,9 +1,11 @@
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session, send_file
 import os
 import numpy as np
 import dotenv
 import uuid
+import io
 
+from location_service import search_facilities_by_location
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from pymongo.mongo_client import MongoClient
 from langchain_core.prompts import ChatPromptTemplate
@@ -43,7 +45,29 @@ app = Flask(
     template_folder=os.path.join(frontend_path),
     static_folder=os.path.join(frontend_path),
 )
-CORS(app)
+
+# CRITICAL: More permissive CORS configuration
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Accept"],
+        "expose_headers": ["Content-Type", "Content-Length", "Content-Disposition"],
+        "supports_credentials": True,
+        "max_age": 3600
+    }
+})
+
+
+# Add CORS headers to all responses
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+
 app.secret_key = os.urandom(24)
 
 dotenv.load_dotenv()
@@ -79,6 +103,13 @@ def initialize_app():
     if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
         raise ValueError("GOOGLE_APPLICATION_CREDENTIALS not set.")
 
+    # Validate Google Cloud Project ID
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+    if not project_id:
+        print("WARNING: GOOGLE_CLOUD_PROJECT not set. Translation features will be limited.")
+    else:
+        print(f"INFO: Using Google Cloud Project: {project_id}")
+
     translator_client = get_translator_client()
     texttospeech_client = get_texttospeech_client()
     speech_client = get_speech_client()
@@ -87,6 +118,7 @@ def initialize_app():
         SUPPORTED_LANGUAGES = get_supported_languages(
             translator_client, allowed_langs=ALLOWED_LANGUAGES
         )
+        print(f"INFO: Loaded {len(SUPPORTED_LANGUAGES)} supported languages: {list(SUPPORTED_LANGUAGES.keys())}")
 
     openai_api_key_secret = SecretStr(os.environ.get("OPENAI_KEY"))
     embeddings_model = OpenAIEmbeddings(
@@ -101,6 +133,7 @@ def initialize_app():
         db = client["pdf_file"]
         collection = db["animal_bites"]
         _ = db.list_collection_names()
+        print("INFO: MongoDB connection successful")
     except Exception as e:
         raise ConnectionError(f"Failed to connect to MongoDB: {e}")
 
@@ -418,7 +451,7 @@ question: {user_input_english}"""
     return jsonify({"reply": bot_response, "chat_history": chat_history})
 
 
-# Dashboard API Endpoints
+# Dashboard API Endpoints (keeping all existing endpoints as-is)
 @app.route('/api/dashboard/stats', methods=['GET'])
 def dashboard_stats():
     try:
@@ -440,7 +473,6 @@ def get_unanswered_questions_api():
     try:
         questions = get_unanswered_questions()
         
-        # Log the count for debugging
         logger.info(f"Fetched {len(questions)} unanswered questions")
         
         return jsonify({
@@ -485,7 +517,6 @@ def submit_answer_endpoint():
                 "status_code": 400
             }), 400
         
-        # Log the submission attempt
         logger.info(f"Attempting to submit answer for question: {question}")
         
         result = submit_answer(question, answer)
@@ -565,7 +596,6 @@ def add_qa_endpoint():
         }), 500
 
 
-# New API endpoints for solved questions
 @app.route('/api/dashboard/solved-questions', methods=['GET'])
 def get_solved():
     try:
@@ -652,48 +682,159 @@ def delete_solved():
             "error": str(e)
         }), 500
 
-@app.route('/api/test/save-interaction', methods=['POST'])
-def test_save_interaction():
-    try:
-        data = request.get_json()
-        question = data.get('question', '')
-        answer = data.get('answer', '')
-        session_id = data.get('session_id', 'test_session')
-        
-        save_user_interaction(question, answer, session_id)
-        
-        return jsonify({
-            "success": True,
-            "message": "Interaction saved successfully"
-        }), 200
-        
-    except Exception as e:
-        print(f"ERROR in test_save_interaction: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
 
-# Test endpoint to manually save unanswered question
-@app.route('/api/test/save-unanswered', methods=['POST'])
-def test_save_unanswered():
+# CRITICAL FIX: Enhanced TTS endpoint with better audio handling
+@app.route("/api/tts", methods=["POST", "OPTIONS"])
+def tts():
+    """Text-to-Speech endpoint with robust error handling and CORS support"""
+    
+    # Handle preflight request
+    if request.method == "OPTIONS":
+        response = app.response_class(status=200)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Accept'
+        response.headers['Access-Control-Expose-Headers'] = 'Content-Type, Content-Length, Accept-Ranges'
+        return response
+    
+    initialize_session()
+    data = request.json
+    text = data.get("text", "")
+    language = data.get("language", session.get("selected_language", DEFAULT_LANGUAGE))
+    session["selected_language"] = language
+    
+    if not text:
+        logger.error("TTS: No text provided")
+        return jsonify({"error": "No text provided"}), 400
+    
+    if not texttospeech_client:
+        logger.error("TTS: Client not available")
+        return jsonify({"error": "Text-to-speech service not available"}), 503
+    
+    logger.info(f"TTS Request - Text: '{text[:50]}...', Language: {language}")
+    
     try:
-        data = request.get_json()
-        question = data.get('question', '')
+        voice_data = LANGUAGE_CODE_MAP.get(language, LANGUAGE_CODE_MAP["en"])
+        synthesis_input = texttospeech.SynthesisInput(text=text)
+
+        voice_name_map = {
+            "en": "en-US-Wavenet-C",
+            "hi": "hi-IN-Wavenet-C",
+            "ta": "ta-IN-Wavenet-C",
+            "te": "te-IN-Standard-A",
+        }
+        voice_name = voice_name_map.get(language)
+        voice = texttospeech.VoiceSelectionParams(
+            language_code=voice_data["tts"],
+            name=voice_name if voice_name else None,
+            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE,
+        )
+
+        # CRITICAL: Use LINEAR16 for better browser compatibility
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=1.0,
+            pitch=0.0,
+            sample_rate_hertz=24000  # Standard MP3 sample rate
+        )
+
+        logger.info("TTS: Calling Google TTS API...")
+        response_tts = texttospeech_client.synthesize_speech(
+            request={"input": synthesis_input, "voice": voice, "audio_config": audio_config}
+        )
         
-        save_unanswered_question(question)
+        audio_content = response_tts.audio_content
+        logger.info(f"TTS: Success! Generated {len(audio_content)} bytes of audio")
+
+        if len(audio_content) == 0:
+            logger.error("TTS: Generated empty audio content")
+            return jsonify({"error": "Generated empty audio"}), 500
+
+        # Create response with proper headers for audio streaming
+        response = app.response_class(
+            response=audio_content,
+            status=200,
+            mimetype="audio/mpeg"
+        )
         
-        return jsonify({
-            "success": True,
-            "message": "Unanswered question saved successfully"
-        }), 200
+        # CRITICAL: Set all necessary headers for browser audio playback
+        response.headers['Content-Type'] = 'audio/mpeg'
+        response.headers['Content-Length'] = str(len(audio_content))
+        response.headers['Accept-Ranges'] = 'bytes'
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Type, Accept-Ranges'
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        response.headers['Content-Disposition'] = 'inline'  # Tell browser to play, not download
+        
+        logger.info("TTS: Sending response with audio")
+        return response
         
     except Exception as e:
-        print(f"ERROR in test_save_unanswered: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        logger.error(f"TTS: Failed with error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Text-to-speech failed: {str(e)}"}), 500
+
+
+@app.route("/api/stt", methods=["POST"])
+def stt():
+    """Speech-to-Text endpoint with robust error handling"""
+    initialize_session()
+    
+    if "file" not in request.files:
+        return jsonify({"error": "No audio file provided"}), 400
+    
+    if not speech_client:
+        logger.error("STT: Client not available")
+        return jsonify({"error": "Speech-to-text service not available"}), 503
+    
+    form_language = request.form.get("language")
+    current_selected_language = (
+        form_language if form_language in ALLOWED_LANGUAGES else session.get("selected_language", DEFAULT_LANGUAGE)
+    )
+    session["selected_language"] = current_selected_language 
+    voice_data = LANGUAGE_CODE_MAP.get(current_selected_language, LANGUAGE_CODE_MAP["en"])
+    audio_file = request.files["file"]
+    audio_content = audio_file.read()
+    
+    logger.info(f"STT: Language: {current_selected_language}, Audio size: {len(audio_content)} bytes")
+    
+    try:
+        audio = speech.RecognitionAudio(content=audio_content)
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+            sample_rate_hertz=48000,
+            language_code=voice_data["tts"],
+            alternative_language_codes=[voice_data["tts"]],
+            enable_automatic_punctuation=True,
+        )
+        response = speech_client.recognize(config=config, audio=audio)
+        
+        transcript = ""
+        for result in response.results:
+            transcript += result.alternatives[0].transcript
+        
+        if not transcript:
+            logger.warning("STT: No transcript generated")
+            return jsonify({"error": "Could not transcribe audio. Please try again."}), 400
+        
+        logger.info(f"STT: Transcript: {transcript}")
+        return jsonify({"transcript": transcript})
+        
+    except Exception as e:
+        logger.error(f"STT: Failed with error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Speech-to-text failed: {str(e)}"}), 500
+
+
+@app.route("/api/get_chat_history")
+def get_chat_history():
+    initialize_session()
+    return jsonify({"chat_history": session.get("chat_history", [])})
+
 
 # Error handlers
 @app.errorhandler(404)
@@ -718,110 +859,110 @@ def bad_request(error):
     }), 400
 
 
-@app.route("/api/tts", methods=["POST"])
-def tts():
-    initialize_session()
-    data = request.json
-    text = data.get("text", "")
-    language = data.get("language", session.get("selected_language", DEFAULT_LANGUAGE))
-    session["selected_language"] = language
-    if not text or not texttospeech_client:
-        return jsonify({"error": "No text or TTS client not available"}), 400
-    print(f"DEBUG: TTS - Text: {text[:50]}..., Language: {language}")
+@app.route('/api/location/search-facilities', methods=['POST', 'OPTIONS'])
+def search_facilities_endpoint():
+    """
+    API endpoint to search for nearby animal bite treatment facilities
+    
+    Request JSON:
+    {
+        "location": "Chennai, Tamil Nadu",
+        "radius_km": 10  (optional, default 10)
+    }
+    
+    Response JSON:
+    {
+        "success": true,
+        "location": {
+            "lat": 13.0827,
+            "lon": 80.2707,
+            "display_name": "Chennai, Tamil Nadu, India"
+        },
+        "facilities": [
+            {
+                "name": "Government Hospital",
+                "type": "hospital",
+                "lat": 13.08,
+                "lon": 80.27,
+                "distance_km": 2.5,
+                "phone": "+91...",
+                "address": "...",
+                "maps_url": "https://www.google.com/maps/search/..."
+            }
+        ],
+        "total_found": 10
+    }
+    """
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        response = app.response_class(status=200)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Accept'
+        return response
+    
+    # Handle POST request
     try:
-        voice_data = LANGUAGE_CODE_MAP.get(language, LANGUAGE_CODE_MAP["en"])
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-
-        voice_name_map = {
-            "en": "en-US-Wavenet-C",
-            "hi": "hi-IN-Wavenet-C",
-            "ta": "ta-IN-Wavenet-C",
-            "te": "te-IN-Standard-A",
-        }
-        voice_name = voice_name_map.get(language)
-        voice = texttospeech.VoiceSelectionParams(
-            language_code=voice_data["tts"],
-            name=voice_name if voice_name else None,
-            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE,
-        )
-
-        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-
-        response_tts = texttospeech_client.synthesize_speech(
-            request={"input": synthesis_input, "voice": voice, "audio_config": audio_config}
-        )
-        print(f"DEBUG: TTS successful for language: {language}")
-
-        return app.response_class(
-            response=response_tts.audio_content, mimetype="audio/mpeg", headers={"Content-Type": "audio/mpeg"}
-        )
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data provided"
+            }), 400
+        
+        location_query = data.get('location', '').strip()
+        radius_km = data.get('radius_km', 10)
+        
+        if not location_query:
+            return jsonify({
+                "success": False,
+                "error": "Location is required"
+            }), 400
+        
+        # Validate radius
+        try:
+            radius_km = int(radius_km)
+            if radius_km < 1 or radius_km > 50:
+                radius_km = 10
+        except (ValueError, TypeError):
+            radius_km = 10
+        
+        logger.info(f"Searching facilities near: {location_query}, radius: {radius_km}km")
+        
+        # Search facilities
+        result = search_facilities_by_location(location_query, radius_km)
+        
+        if result["success"]:
+            logger.info(f"Found {result.get('total_found', 0)} facilities")
+            return jsonify(result), 200
+        else:
+            logger.warning(f"Location search failed: {result.get('error')}")
+            return jsonify(result), 404
+        
     except Exception as e:
-        print(f"DEBUG: TTS error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/generate_audio", methods=["GET", "POST"])
-def generate_audio():
-    # Redirect to TTS endpoint for consistency
-    if request.method == "GET":
-        text = request.args.get("text", "")
-        language = request.args.get("language", DEFAULT_LANGUAGE)
-        # Convert GET to POST format
-        data = {"text": text, "language": language}
-        request.json = data
-        return tts()
-    else:
-        return tts()
-
-
-@app.route("/api/stt", methods=["POST"])
-def stt():
-    initialize_session()
-    if "file" not in request.files:
-        return jsonify({"error": "No audio file"}), 400
-    form_language = request.form.get("language")
-    current_selected_language = (
-        form_language if form_language in ALLOWED_LANGUAGES else session.get("selected_language", DEFAULT_LANGUAGE)
-    )
-    session["selected_language"] = current_selected_language 
-    voice_data = LANGUAGE_CODE_MAP.get(current_selected_language, LANGUAGE_CODE_MAP["en"])
-    audio_file = request.files["file"]
-    audio_content = audio_file.read()
-    print(f"DEBUG: STT - Language: {current_selected_language}")
-    try:
-        audio = speech.RecognitionAudio(content=audio_content)
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
-            sample_rate_hertz=48000,
-            language_code=voice_data["tts"],
-            alternative_language_codes=[voice_data["tts"]],  # Add fallback
-        )
-        response = speech_client.recognize(config=config, audio=audio)
-        transcript = ""
-        for result in response.results:
-            transcript += result.alternatives[0].transcript
-        print(f"DEBUG: STT transcript: {transcript}")
-        return jsonify({"transcript": transcript})
-    except Exception as e:
-        print(f"DEBUG: STT error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/get_chat_history")
-def get_chat_history():
-    initialize_session()
-    return jsonify({"chat_history": session.get("chat_history", [])})
-
-
-
+        logger.error(f"Error in search_facilities_endpoint: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": f"Internal server error: {str(e)}",
+            "facilities": []
+        }), 500
 
 
 if __name__ == "__main__":
     try:
         initialize_app()
-        print("Application initialized successfully!")
-        print(f"Supported languages: {ALLOWED_LANGUAGES}")
+        print("="*60)
+        print("🚀 Application initialized successfully!")
+        print(f"📝 Supported languages: {ALLOWED_LANGUAGES}")
+        print(f"☁️  Google Cloud Project: {os.getenv('GOOGLE_CLOUD_PROJECT', 'NOT SET')}")
+        print(f"🌍 Translation client: {'✓' if translator_client else '✗'}")
+        print(f"🔊 Text-to-Speech client: {'✓' if texttospeech_client else '✗'}")
+        print(f"🎤 Speech-to-Text client: {'✓' if speech_client else '✗'}")
+        print("="*60)
         app.run(debug=True, host="0.0.0.0", port=5000)
     except Exception as e:
-        print(f"Failed to initialize application: {e}")
+        print(f"❌ Failed to initialize application: {e}")
+        import traceback
+        traceback.print_exc()
         raise
