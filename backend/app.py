@@ -4,6 +4,9 @@ import numpy as np
 import dotenv
 import uuid
 import io
+import os
+import google.generativeai as genai
+
 
 from location_service import search_facilities_by_location
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -70,7 +73,9 @@ def after_request(response):
 
 app.secret_key = os.urandom(24)
 
-dotenv.load_dotenv()
+from dotenv import load_dotenv
+load_dotenv(dotenv_path=".env", override=True)
+
 
 # Globals
 translator_client = None
@@ -97,11 +102,22 @@ LANGUAGE_CODE_MAP = {
 
 
 def initialize_app():
+    # 🔴 GLOBALS MUST COME FIRST
     global translator_client, texttospeech_client, speech_client, SUPPORTED_LANGUAGES
     global embeddings_model, llm, smaller_llm, larger_llm, collection
 
+    # -------- GEMINI SETUP (FREE) --------
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if gemini_key:
+        genai.configure(api_key=gemini_key)
+        print("✅ Gemini API initialized")
+    else:
+        print("⚠️ GEMINI_API_KEY not found")
+
+    # -------- EXISTING CODE (UNCHANGED) --------
     if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
         raise ValueError("GOOGLE_APPLICATION_CREDENTIALS not set.")
+
 
     # Validate Google Cloud Project ID
     project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
@@ -197,6 +213,16 @@ Return only the category name: 'Animal Bite-Related' or 'Not Animal Bite-Related
     category: Literal["Animal Bite-Related", "Not Animal Bite-Related"] = Field(
         description="The classified category regarding animal bite relevance."
     )
+
+
+def gemini_generate(prompt: str) -> str:
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        print("Gemini error:", e)
+        return "⚠️ AI service is temporarily unavailable."
 
 
 def initialize_session():
@@ -370,9 +396,8 @@ latest_user_input:{user_input_english}"""
 context:{context}
 question:{modified_user_input}"""
                     response_llm_english_result = llm.invoke(prompt_template).content
-                    bot_response_english = (
-                        response_llm_english_result if isinstance(response_llm_english_result, str) else None
-                    )
+                    bot_response_english =  gemini_generate(prompt_template)  
+                       
                     print(f"DEBUG: Generated response from context")
                 else:
                     # No relevant context found - check relevance
@@ -960,7 +985,7 @@ if __name__ == "__main__":
         print(f"🔊 Text-to-Speech client: {'✓' if texttospeech_client else '✗'}")
         print(f"🎤 Speech-to-Text client: {'✓' if speech_client else '✗'}")
         print("="*60)
-        app.run(debug=True, host="0.0.0.0", port=5000)
+        app.run(debug=False, use_reloader=False, host="0.0.0.0", port=5000)
     except Exception as e:
         print(f"❌ Failed to initialize application: {e}")
         import traceback

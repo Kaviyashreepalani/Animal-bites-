@@ -13,69 +13,26 @@ from datetime import datetime
 from flask import session
 from bson import ObjectId
 
+
+import firebase_admin
+from firebase_admin import credentials, firestore
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 🔐 Firebase initialization (SAFE & SIMPLE)
+if not firebase_admin._apps:
+    cred = credentials.Certificate("firebase_key.json")
+    firebase_admin.initialize_app(cred)
+    logger.info("✅ Firebase initialized using firebase_key.json")
+
+db = firestore.client()
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def get_firebase_config():
-    """Fetch and validate Firebase service account credentials."""
-    # Ensure .env is loaded
-    dotenv.load_dotenv()
-    firebase_key = os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY")
-    
-    if not firebase_key:
-        logger.error("FIREBASE_SERVICE_ACCOUNT_KEY not found in environment variables.")
-        raise ValueError("FIREBASE_SERVICE_ACCOUNT_KEY not found in environment variables.")
-    
-    logger.info("Retrieved FIREBASE_SERVICE_ACCOUNT_KEY from environment.")
-    
-    # Handle JSON string
-    try:
-        # Strip whitespace and normalize newlines for Windows
-        firebase_key = firebase_key.strip().replace('\r\n', '\n')
-        config = json.loads(firebase_key)
-        logger.info("Successfully parsed FIREBASE_SERVICE_ACCOUNT_KEY as JSON string.")
-        
-        # Validate required fields
-        required_fields = ["type", "project_id", "private_key", "client_email", "client_id"]
-        missing_fields = [field for field in required_fields if field not in config]
-        if missing_fields:
-            logger.error(f"Invalid Firebase config: Missing fields {missing_fields}")
-            raise ValueError(f"Invalid Firebase config: Missing fields {missing_fields}")
-        
-        return config
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY as JSON: {e}")
-        logger.debug(f"Problematic JSON string (first 100 chars): {firebase_key[:100]}...")
-        raise ValueError(f"Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY as JSON: {e}")
-    except Exception as e:
-        logger.error(f"Unexpected error in get_firebase_config: {e}")
-        raise
-
-def initialize_firebase():
-    """Initialize Firebase Firestore client."""
-    if firebase_admin._apps:
-        logger.info("Firebase app already initialized.")
-        return firestore.client()
-    try:
-        firebase_config = get_firebase_config()
-        cred = credentials.Certificate(firebase_config)
-        firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        logger.info("Firebase initialized successfully.")
-        # Test connection
-        test_doc = db.collection("DOCTOR").document("1").get()
-        logger.info(f"Firebase connection test: Document exists: {test_doc.exists}")
-        return db
-    except Exception as e:
-        logger.error(f"Failed to initialize Firebase: {e}")
-        raise
-
-try:
-    db = initialize_firebase()
-except Exception as e:
-    logger.error(f"Initial Firebase setup failed: {e}")
-    raise
 
 # Helper function to check if a conversation is casual
 def is_casual_conversation(question, answer):

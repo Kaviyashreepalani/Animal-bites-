@@ -1,7 +1,12 @@
 import React, { useState, useRef, useEffect } from "react";
-import LocationFinder from "./LocationFinder"; // Import the new component
+import { useAuth } from './AuthContext';
+import LocationFinder from "./LocationFinder";
+import './index.css';
 
-const API_BASE_URL = "https://animal-bites-backend-4.onrender.com";
+// IMPORTANT: Change this to your actual backend URL
+// For local development: "http://localhost:5000"
+// For production: "https://animal-bites-backend-4.onrender.com"
+const API_BASE_URL = "http://localhost:5000";
 
 const SUPPORTED_LANGUAGES = [
   { code: "en", label: "English (en-US)" },
@@ -19,8 +24,10 @@ export default function App() {
   const [currentlyPlaying, setCurrentlyPlaying] = useState(null);
   const [inputText, setInputText] = useState("");
   const [audioError, setAudioError] = useState(null);
-  const [showLocationFinder, setShowLocationFinder] = useState(false); // NEW STATE
+  const [showLocationFinder, setShowLocationFinder] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
+  const { currentUser, logout } = useAuth();
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
   const recognitionRef = useRef(null);
@@ -28,7 +35,6 @@ export default function App() {
   const currentAudioRef = useRef(null);
   const audioUrlsRef = useRef(new Set());
 
-  // ... (all your existing useEffect hooks remain the same)
   useEffect(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SR) {
@@ -52,8 +58,6 @@ export default function App() {
       };
 
       recognitionRef.current = rec;
-    } else {
-      console.log("Speech recognition not supported, using fallback recording");
     }
 
     return () => {
@@ -68,7 +72,6 @@ export default function App() {
   useEffect(() => {
     if (recognitionRef.current) {
       recognitionRef.current.lang = mapLangToLocale(language);
-      console.log(`Updated speech recognition language to: ${mapLangToLocale(language)}`);
     }
   }, [language]);
 
@@ -97,7 +100,6 @@ export default function App() {
     setBackendLanguage();
   }, [language]);
 
-  // ... (all your existing functions remain the same)
   function cleanupAudioUrls() {
     audioUrlsRef.current.forEach(url => {
       try {
@@ -119,31 +121,53 @@ export default function App() {
     }
   }
 
+  function addMessage(sender, text, audioBlob) {
+    setMessages((m) => [...m, { sender, text, audioBlob, id: Date.now() + Math.random() }]);
+  }
+
   async function handleUserText(text, forcedLang) {
     if (!text.trim()) return;
 
     const effectiveLang = forcedLang || language;
-    console.log(`Sending user message: "${text}" in language: ${effectiveLang}`);
+    console.log(`=== SENDING MESSAGE ===`);
+    console.log(`User text: "${text}"`);
+    console.log(`Language: ${effectiveLang}`);
+    
     addMessage("user", text);
+    setIsLoading(true);
 
     try {
+      console.log(`Calling backend: ${API_BASE_URL}/api/process_message`);
+      
       const chatResp = await fetch(`${API_BASE_URL}/api/process_message`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
         body: JSON.stringify({ 
           message: text, 
           language: effectiveLang
         }),
       });
 
-      if (!chatResp.ok) throw new Error(`HTTP error! status: ${chatResp.status}`);
+      console.log(`Response status: ${chatResp.status} ${chatResp.statusText}`);
+
+      if (!chatResp.ok) {
+        const errorText = await chatResp.text();
+        console.error(`HTTP error! Response: ${errorText}`);
+        throw new Error(`HTTP error! status: ${chatResp.status}`);
+      }
       
       const chatJson = await chatResp.json();
       console.log("Backend response:", chatJson);
+      
       const reply = chatJson.reply ?? "Sorry, no reply.";
+      console.log(`Bot reply: "${reply}"`);
 
+      // Try to get TTS audio
       try {
-        console.log(`Generating TTS for: "${reply}" in language: ${effectiveLang}`);
+        console.log(`Requesting TTS for: "${reply}"`);
         const ttsResp = await fetch(`${API_BASE_URL}/api/tts`, {
           method: "POST",
           headers: { 
@@ -153,41 +177,39 @@ export default function App() {
           body: JSON.stringify({ text: reply, language: effectiveLang }),
         });
 
+        console.log(`TTS response status: ${ttsResp.status}`);
+
         if (ttsResp.ok) {
-          const contentType = ttsResp.headers.get("content-type");
-          console.log("TTS response content-type:", contentType);
-          
           const audioBlob = await ttsResp.blob();
-          console.log("TTS audio blob received - size:", audioBlob.size, "type:", audioBlob.type);
+          console.log(`TTS audio blob size: ${audioBlob.size} bytes`);
           
           if (audioBlob.size > 0) {
             const correctedBlob = new Blob([audioBlob], { type: 'audio/mpeg' });
             addMessage("bot", reply, correctedBlob);
           } else {
-            console.error("Audio blob is empty");
+            console.warn("Empty audio blob received");
             addMessage("bot", reply);
           }
         } else {
           const errorText = await ttsResp.text();
-          console.error("TTS generation failed:", ttsResp.status, ttsResp.statusText, errorText);
+          console.error(`TTS failed: ${errorText}`);
           addMessage("bot", reply);
         }
       } catch (err) {
-        console.error("Error generating TTS audio:", err);
+        console.error("TTS error:", err);
         addMessage("bot", reply);
       }
     } catch (err) {
-      console.error("Chat error:", err);
-      addMessage("bot", "Error contacting chatbot.");
+      console.error("=== CHAT ERROR ===");
+      console.error("Error:", err);
+      console.error("Stack:", err.stack);
+      addMessage("bot", "Error contacting chatbot. Please check if the backend server is running.");
+    } finally {
+      setIsLoading(false);
     }
   }
 
-  function addMessage(sender, text, audioBlob) {
-    setMessages((m) => [...m, { sender, text, audioBlob, id: Date.now() + Math.random() }]);
-  }
-
   function startRecognition() {
-    console.log("Starting speech recognition");
     if (recognitionSupported) {
       try {
         recognitionRef.current.start();
@@ -201,7 +223,6 @@ export default function App() {
   }
 
   function stopRecognition() {
-    console.log("Stopping speech recognition");
     if (recognitionSupported) {
       try {
         recognitionRef.current.stop();
@@ -214,7 +235,6 @@ export default function App() {
   }
 
   async function startRecordingFallback() {
-    console.log("Starting fallback recording");
     setIsRecordingFallback(true);
     recordedChunksRef.current = [];
     try {
@@ -226,7 +246,6 @@ export default function App() {
         if (e.data.size > 0) recordedChunksRef.current.push(e.data);
       };
       mr.onstop = async () => {
-        console.log("Recording stopped, sending to STT");
         const blob = new Blob(recordedChunksRef.current, { type: "audio/webm" });
         const fd = new FormData();
         fd.append("file", blob, "recording.webm");
@@ -235,11 +254,8 @@ export default function App() {
         try {
           const sttResp = await fetch(`${API_BASE_URL}/api/stt`, { method: "POST", body: fd });
           const sttJson = await sttResp.json();
-          console.log("STT response:", sttJson);
           if (sttJson.transcript) {
             handleUserText(sttJson.transcript, language);
-          } else {
-            console.error("No transcript received from STT");
           }
         } catch (err) {
           console.error("STT error:", err);
@@ -257,7 +273,6 @@ export default function App() {
   }
 
   function stopRecordingFallback() {
-    console.log("Stopping fallback recording");
     if (mediaRecorderRef.current?.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
@@ -265,7 +280,6 @@ export default function App() {
 
   function stopCurrentAudio() {
     if (currentAudioRef.current) {
-      console.log("Stopping current audio");
       try {
         currentAudioRef.current.pause();
         currentAudioRef.current.currentTime = 0;
@@ -282,10 +296,7 @@ export default function App() {
     const msg = messages[index];
     if (!msg || msg.sender !== "bot") return;
 
-    console.log(`Play button clicked for message ${index}`);
-
     if (currentlyPlaying === index) {
-      console.log("Stopping currently playing audio");
       stopCurrentAudio();
       return;
     }
@@ -295,13 +306,11 @@ export default function App() {
     setAudioError(null);
 
     if (msg.audioBlob) {
-      console.log("Playing existing audio blob, size:", msg.audioBlob.size, "type:", msg.audioBlob.type);
       playAudioBlob(msg.audioBlob, index);
       return;
     }
 
     try {
-      console.log(`Fetching TTS for message: "${msg.text}" in language: ${language}`);
       const ttsResp = await fetch(`${API_BASE_URL}/api/tts`, {
         method: "POST",
         headers: { 
@@ -312,11 +321,7 @@ export default function App() {
       });
 
       if (ttsResp.ok) {
-        const contentType = ttsResp.headers.get("content-type");
-        console.log("TTS response content-type:", contentType);
-        
         const audioBlob = await ttsResp.blob();
-        console.log("TTS audio fetched successfully, size:", audioBlob.size, "type:", audioBlob.type);
         
         if (audioBlob.size > 0) {
           const correctedBlob = new Blob([audioBlob], { type: 'audio/mpeg' });
@@ -328,14 +333,11 @@ export default function App() {
             return newMsgs;
           });
         } else {
-          console.error("Audio blob is empty");
           setAudioError("Received empty audio data");
           playWithBrowserTTS(msg.text, index);
         }
       } else {
-        const errorText = await ttsResp.text();
-        console.error("TTS fetch failed:", ttsResp.status, ttsResp.statusText, errorText);
-        setAudioError(`TTS failed: ${ttsResp.status}`);
+        setAudioError(`TTS failed`);
         playWithBrowserTTS(msg.text, index);
       }
     } catch (err) {
@@ -346,10 +348,7 @@ export default function App() {
   }
 
   function playWithBrowserTTS(text, index) {
-    console.log("Using browser TTS fallback");
-    
     if (!window.speechSynthesis) {
-      console.error("Browser TTS not supported");
       setCurrentlyPlaying(null);
       return;
     }
@@ -357,41 +356,21 @@ export default function App() {
     try {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = mapLangToLocale(language);
-      utterance.rate = 1.0;
-      utterance.pitch = 1.0;
-      utterance.volume = 1.0;
-
-      utterance.onstart = () => {
-        console.log("Browser TTS started");
-      };
-
-      utterance.onend = () => {
-        console.log("Browser TTS ended");
-        setCurrentlyPlaying(null);
-      };
-
-      utterance.onerror = (e) => {
-        console.error("Browser TTS error:", e);
+      utterance.onend = () => setCurrentlyPlaying(null);
+      utterance.onerror = () => {
         setCurrentlyPlaying(null);
         setAudioError("Browser TTS failed");
       };
 
       window.speechSynthesis.speak(utterance);
-      console.log("Browser TTS initiated");
     } catch (err) {
-      console.error("Browser TTS error:", err);
       setCurrentlyPlaying(null);
       setAudioError("Browser TTS unavailable");
     }
   }
 
   function playAudioBlob(blob, index) {
-    console.log("=== AUDIO PLAYBACK START ===");
-    console.log("Blob size:", blob.size, "bytes");
-    console.log("Blob type:", blob.type);
-    
     if (blob.size === 0) {
-      console.error("Cannot play empty audio blob");
       setAudioError("Empty audio data");
       setCurrentlyPlaying(null);
       return;
@@ -399,88 +378,37 @@ export default function App() {
 
     try {
       const url = URL.createObjectURL(blob);
-      console.log("Created object URL:", url);
       audioUrlsRef.current.add(url);
       
       const audio = new Audio();
       audio.preload = 'auto';
       audio.crossOrigin = 'anonymous';
-      
       currentAudioRef.current = audio;
 
-      audio.addEventListener('loadstart', () => {
-        console.log("✓ Audio load started");
-      });
-
-      audio.addEventListener('loadedmetadata', () => {
-        console.log("✓ Audio metadata loaded");
-        console.log("  Duration:", audio.duration, "seconds");
-        console.log("  Ready state:", audio.readyState);
-      });
-
-      audio.addEventListener('canplay', () => {
-        console.log("✓ Audio can play (enough data loaded)");
-      });
-
-      audio.addEventListener('canplaythrough', () => {
-        console.log("✓ Audio can play through (fully buffered)");
-      });
-
-      audio.addEventListener('playing', () => {
-        console.log("✓ Audio is now playing");
-      });
-
       audio.addEventListener('ended', () => {
-        console.log("✓ Audio playback ended normally");
         setCurrentlyPlaying(null);
         currentAudioRef.current = null;
         URL.revokeObjectURL(url);
         audioUrlsRef.current.delete(url);
       });
 
-      audio.addEventListener('error', (e) => {
-        console.error("✗ Audio playback error event fired");
-        if (audio.error) {
-          console.error("  Error code:", audio.error.code);
-          console.error("  Error message:", audio.error.message);
-          const errorMessages = {
-            1: "MEDIA_ERR_ABORTED - Playback aborted",
-            2: "MEDIA_ERR_NETWORK - Network error",
-            3: "MEDIA_ERR_DECODE - Decoding error",
-            4: "MEDIA_ERR_SRC_NOT_SUPPORTED - Format not supported"
-          };
-          console.error("  Error description:", errorMessages[audio.error.code] || "Unknown error");
-          setAudioError(errorMessages[audio.error.code] || "Playback error");
-        }
+      audio.addEventListener('error', () => {
+        setAudioError("Playback error");
         setCurrentlyPlaying(null);
         currentAudioRef.current = null;
         URL.revokeObjectURL(url);
         audioUrlsRef.current.delete(url);
       });
 
-      console.log("Setting audio source...");
       audio.src = url;
-      
-      console.log("Calling audio.load()...");
       audio.load();
 
       setTimeout(() => {
-        console.log("Attempting to play audio...");
-        console.log("Audio ready state:", audio.readyState);
-        
         const playPromise = audio.play();
-        
         if (playPromise !== undefined) {
           playPromise
-            .then(() => {
-              console.log("✓✓✓ Audio playback started successfully! ✓✓✓");
-              setAudioError(null);
-            })
+            .then(() => setAudioError(null))
             .catch((err) => {
-              console.error("✗✗✗ Audio play() promise rejected ✗✗✗");
-              console.error("Error name:", err.name);
-              console.error("Error message:", err.message);
-              console.error("Full error:", err);
               setAudioError(`Playback failed: ${err.message}`);
               setCurrentlyPlaying(null);
               currentAudioRef.current = null;
@@ -491,12 +419,9 @@ export default function App() {
       }, 100);
 
     } catch (err) {
-      console.error("✗ Error in playAudioBlob:", err);
       setAudioError(err.message);
       setCurrentlyPlaying(null);
     }
-    
-    console.log("=== AUDIO PLAYBACK SETUP COMPLETE ===");
   }
 
   function handleMicClick() {
@@ -521,7 +446,15 @@ export default function App() {
     }
   }
 
-  // NEW: Render location finder if toggled
+  async function handleLogout() {
+    try {
+      await logout();
+      window.location.href = '/';
+    } catch (err) {
+      console.error('Failed to log out', err);
+    }
+  }
+
   if (showLocationFinder) {
     return (
       <div>
@@ -554,50 +487,110 @@ export default function App() {
   }
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: "20px",
-      fontFamily: "system-ui, -apple-system, sans-serif"
-    }}>
+    <div className="app-root">
+      {/* Backend Status Indicator */}
       <div style={{
-        background: "white",
-        borderRadius: "20px",
-        boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
-        width: "100%",
-        maxWidth: "800px",
-        overflow: "hidden"
+        position: "fixed",
+        top: "20px",
+        left: "20px",
+        zIndex: 1000,
+        padding: "8px 12px",
+        background: isLoading ? "#fbbf24" : "#10b981",
+        color: "white",
+        borderRadius: "8px",
+        fontSize: "0.85rem",
+        fontWeight: "600",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.2)"
       }}>
-        <header style={{
-          background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-          color: "white",
-          padding: "20px",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: "10px"
-        }}>
-          <h1 style={{ margin: 0, fontSize: "24px", fontWeight: "bold" }}>
-            Bite Line - Voice Chat
-          </h1>
-          <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
-            {/* NEW: Location finder button */}
+        {isLoading ? "⏳ Processing..." : "● Connected"}
+      </div>
+
+      <div style={{
+        position: "fixed",
+        top: "20px",
+        right: "20px",
+        zIndex: 1000,
+        display: 'flex',
+        gap: '10px'
+      }}>
+        {currentUser && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            padding: '10px 16px',
+            background: 'white',
+            borderRadius: '12px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+          }}>
+            <div style={{
+              width: '32px',
+              height: '32px',
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'white',
+              fontWeight: '700',
+              fontSize: '0.9rem'
+            }}>
+              {currentUser.email[0].toUpperCase()}
+            </div>
+            <span style={{ fontSize: '0.9rem', fontWeight: '500', color: '#374151' }}>
+              {currentUser.email.split('@')[0]}
+            </span>
+            <button
+              onClick={handleLogout}
+              style={{
+                padding: '6px 12px',
+                background: '#fee2e2',
+                border: 'none',
+                borderRadius: '8px',
+                color: '#dc2626',
+                fontWeight: '600',
+                fontSize: '0.85rem',
+                cursor: 'pointer'
+              }}
+            >
+              Logout
+            </button>
+          </div>
+        )}
+        <button
+          onClick={() => window.location.href = '/'}
+          style={{
+            padding: "12px 20px",
+            borderRadius: "12px",
+            border: "none",
+            background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+            color: "white",
+            fontWeight: "bold",
+            cursor: "pointer",
+            fontSize: "14px",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.2)"
+          }}
+        >
+          Home
+        </button>
+      </div>
+
+      <div className="app-card">
+        <header className="app-header">
+          <h1>Bite Line - Voice Chat</h1>
+          <div className="controls">
             <button
               onClick={() => setShowLocationFinder(true)}
               style={{
-                padding: "8px 16px",
-                borderRadius: "8px",
+                padding: "10px 18px",
+                borderRadius: "12px",
                 border: "none",
-                background: "white",
-                color: "#667eea",
-                fontWeight: "bold",
+                background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+                color: "white",
+                fontWeight: "600",
                 cursor: "pointer",
                 fontSize: "14px",
+                boxShadow: "0 4px 12px rgba(16, 185, 129, 0.3)",
                 transition: "all 0.3s"
               }}
             >
@@ -605,17 +598,7 @@ export default function App() {
             </button>
             <select 
               value={language} 
-              onChange={(e) => {
-                console.log(`Language changed to: ${e.target.value}`);
-                setLanguage(e.target.value);
-              }}
-              style={{
-                padding: "8px 12px",
-                borderRadius: "8px",
-                border: "none",
-                fontSize: "14px",
-                cursor: "pointer"
-              }}
+              onChange={(e) => setLanguage(e.target.value)}
             >
               {SUPPORTED_LANGUAGES.map((l) => (
                 <option key={l.code} value={l.code}>{l.label}</option>
@@ -623,19 +606,7 @@ export default function App() {
             </select>
             <button
               onClick={handleMicClick}
-              style={{
-                padding: "8px 16px",
-                borderRadius: "8px",
-                border: "none",
-                background: listening || isRecordingFallback 
-                  ? "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)"
-                  : "white",
-                color: listening || isRecordingFallback ? "white" : "#667eea",
-                fontWeight: "bold",
-                cursor: "pointer",
-                fontSize: "14px",
-                transition: "all 0.3s"
-              }}
+              className={`mic-btn ${listening || isRecordingFallback ? 'active' : ''}`}
             >
               {recognitionSupported
                 ? (listening ? "⏹ Stop" : "🎤 Speak")
@@ -646,27 +617,34 @@ export default function App() {
 
         {audioError && (
           <div style={{
-            background: "#fee",
-            color: "#c00",
-            padding: "10px",
+            background: "linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)",
+            color: "#dc2626",
+            padding: "12px 20px",
             textAlign: "center",
-            fontSize: "14px"
+            fontSize: "14px",
+            fontWeight: "500",
+            borderBottom: "1px solid #fca5a5"
           }}>
-            Audio Error: {audioError}
+            🔊 Audio Error: {audioError}
           </div>
         )}
 
-        <main 
-          ref={chatBoxRef}
-          style={{
-            height: "500px",
-            overflowY: "auto",
-            padding: "20px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "15px"
-          }}
-        >
+        <main ref={chatBoxRef} className="chat-container">
+          {messages.length === 0 && (
+            <div style={{
+              textAlign: 'center',
+              color: '#9ca3af',
+              padding: '3rem 1rem',
+              fontSize: '1rem'
+            }}>
+              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>💬</div>
+              <p>Start a conversation by typing or speaking!</p>
+              <p style={{ fontSize: '0.9rem', marginTop: '0.5rem' }}>
+                Ask about animal bites, treatment, or prevention
+              </p>
+            </div>
+          )}
+          
           {messages.map((m, i) => (
             <div 
               key={m.id || i} 
@@ -674,106 +652,75 @@ export default function App() {
                 display: "flex",
                 justifyContent: m.sender === "user" ? "flex-end" : "flex-start",
                 alignItems: "flex-start",
-                gap: "10px"
+                gap: "12px"
               }}
             >
-              <div style={{
-                maxWidth: "70%",
-                background: m.sender === "user" 
-                  ? "linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
-                  : "#f3f4f6",
-                color: m.sender === "user" ? "white" : "#1f2937",
-                padding: "12px 16px",
-                borderRadius: "16px",
-                boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
-              }}>
-                {m.text}
-              </div>
-              {m.sender === "bot" && (
-                <button
-                  onClick={() => playBotVoice(i)}
-                  title={currentlyPlaying === i ? "Stop voice" : "Play voice"}
-                  style={{
-                    width: "40px",
-                    height: "40px",
-                    borderRadius: "50%",
-                    border: "none",
-                    background: currentlyPlaying === i 
-                      ? "linear-gradient(135deg, #dc2626 0%, #ef4444 100%)" 
-                      : "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-                    color: "white",
-                    cursor: "pointer",
-                    fontSize: "18px",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
-                    transition: "all 0.3s"
-                  }}
-                >
-                  {currentlyPlaying === i ? "⏸" : "🔊"}
-                </button>
+              {m.sender === "user" ? (
+                <>
+                  <div className="chat-msg user">
+                    <span className="chat-text">{m.text}</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="chat-msg bot">
+                    <span className="chat-text">{m.text}</span>
+                  </div>
+                  <button
+                    onClick={() => playBotVoice(i)}
+                    title={currentlyPlaying === i ? "Stop voice" : "Play voice"}
+                    className="play-btn"
+                    style={{
+                      background: currentlyPlaying === i 
+                        ? "linear-gradient(135deg, #dc2626 0%, #ef4444 100%)" 
+                        : "linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)"
+                    }}
+                  >
+                    {currentlyPlaying === i ? "⏸" : "🔊"}
+                  </button>
+                </>
               )}
             </div>
           ))}
+          
+          {isLoading && (
+            <div style={{
+              display: "flex",
+              justifyContent: "flex-start",
+              alignItems: "center",
+              gap: "12px",
+              padding: "1rem"
+            }}>
+              <div className="chat-msg bot" style={{ opacity: 0.7 }}>
+                <span className="chat-text">Typing...</span>
+              </div>
+            </div>
+          )}
         </main>
 
-        <div
-          style={{
-            padding: "20px",
-            borderTop: "1px solid #e5e7eb",
-            display: "flex",
-            gap: "10px"
-          }}
-        >
+        <div className="composer">
           <input 
+            type="text"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder="Type a message or press Speak" 
+            placeholder="Type a message or press Speak..." 
             autoComplete="off"
-            style={{
-              flex: 1,
-              padding: "12px 16px",
-              borderRadius: "12px",
-              border: "2px solid #e5e7eb",
-              fontSize: "14px",
-              outline: "none",
-              transition: "border 0.3s"
-            }}
-            onFocus={(e) => e.target.style.borderColor = "#667eea"}
-            onBlur={(e) => e.target.style.borderColor = "#e5e7eb"}
+            disabled={isLoading}
           />
-          <button 
-            onClick={handleTextSubmit}
-            style={{
-              padding: "12px 24px",
-              borderRadius: "12px",
-              border: "none",
-              background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-              color: "white",
-              fontWeight: "bold",
-              cursor: "pointer",
-              fontSize: "14px",
-              transition: "transform 0.2s"
-            }}
-            onMouseDown={(e) => e.currentTarget.style.transform = "scale(0.95)"}
-            onMouseUp={(e) => e.currentTarget.style.transform = "scale(1)"}
-          >
+          <button onClick={handleTextSubmit} disabled={isLoading || !inputText.trim()}>
             Send
           </button>
         </div>
       </div>
       
-      <div style={{
-        marginTop: "20px",
-        color: "white",
-        textAlign: "center",
-        fontSize: "14px"
-      }}>
+      <div className="footer-note">
         <p>Select your preferred language and start chatting!</p>
-        <p style={{ fontSize: "12px", opacity: 0.8 }}>
+        <p style={{ fontSize: "13px", opacity: 0.9, marginTop: "6px" }}>
           Or find nearby treatment centers with the 🏥 Find Clinics button
+        </p>
+        <p style={{ fontSize: "12px", opacity: 0.7, marginTop: "6px", color: "#dc2626" }}>
+          Backend: {API_BASE_URL}
         </p>
       </div>
     </div>
