@@ -486,9 +486,8 @@ Contributions are welcome! Please follow these steps:
 
 ### Connect
 
-- GitHub: [@yourusername](https://github.com/yourusername)
-- LinkedIn: [Your Profile](https://linkedin.com/in/yourprofile)
-- Email: your.email@example.com
+- GitHub: Kaviyashreepalani(https://github.com/Kaviyashreepalani)
+- Email: kaviyashreepj0911@gmail.com
 
 ---
 
